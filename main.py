@@ -1,53 +1,104 @@
-from fastapi import FastAPI
-from fastapi import HTTPException
-from pydantic import BaseModel
-from typing import List
+from fastapi import FastAPI, Depends, HTTPException
+from sqlalchemy.orm import Session
 
-class Note(BaseModel):
-    title:str
-    content:str
-    tags: List[str] = []
+from database import engine, sessionLocal
+from models import Base, Note
+from schemas import NoteCreate, NoteResponse
 
 app = FastAPI()
-notes = {}
+
+Base.metadata.create_all(bind=engine)
+
+def get_db():
+    db = sessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 
 @app.get("/")
 def home():
     return {"message":"API is working"}
 
+# create note
+@app.post("/notes/", response_model=NoteResponse)
+def create_note(note: NoteCreate, db: Session = Depends(get_db)):
+    tags_str = ",".join(note.tags)
+    new_note = Note(title = note.title,
+                    content = note.content,
+                    tags = tags_str)
+    db.add(new_note)
+    db.commit()
+    db.refresh(new_note)
 
-@app.post("/notes/{note_id}")
-def create_note(note_id: int, note: Note):
-    if note_id in notes:
-        raise HTTPException(status_code=400, detail="Note Already Exists")
-    notes[note_id] = note.model_dump()
-    return{"message": "Note Created",
-           "data": notes[note_id]}
-
-@app.get("/notes")
-def show_all():
-    return notes
-
-@app.get("/notes/{note_id}")
-def show(note_id: int):
-    if note_id in notes:
-        return notes[note_id]
-    else:
-        raise HTTPException(status_code= 404, detail= "Note doesnt exist")
-
-@app.put("/notes/{note_id}")
-def update_note(note_id: int, note:Note):
-    if note_id not in notes:
-        raise HTTPException(status_code=404, detail="Note not found")
-    notes[note_id] = note.model_dump()
     return {
-        "message":"Note Updated",
-        "note":notes[note_id]
+        "id": new_note.id,
+        "title": new_note.title,
+        "content": new_note.content,
+        "tags": new_note.tags.split(",") if new_note.tags else []
     }
 
+# read all notes
+@app.get("/notes/", response_model=list[NoteResponse])
+def get_notes(db: Session = Depends(get_db)):
+    notes = db.query(Note).all()
+    result = []
+    for note in notes:
+        result.append({
+            "id": note.id,
+            "title": note.title,
+            "content": note.content,
+            "tags": note.tags.split(",") if note.tags else[]
+        })
+    return result
+
+# get a particular note
+@app.get("/notes/{note_id}", response_model=NoteResponse)
+def get_note(note_id: int, db: Session = Depends(get_db)):
+
+    note = db.query(Note).filter(Note.id == note_id).first()
+
+    if not note:
+        raise HTTPException(status_code= 404, detail= "Note doesnt exist")
+    return {
+        "id": note.id,
+        "title": note.title,
+        "content": note.content,
+        "tags": note.tags.split(",") if note.tags else []
+    }
+
+# update note
+@app.put("/notes/{note_id}", response_model=NoteResponse)
+def update_note(note_id: int, updated: NoteCreate, db: Session = Depends(get_db)):
+
+    note = db.query(Note).filter(Note.id == note_id).first()
+
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    note.title = updated.title
+    note.content = updated.content
+    note.tags = ",".join(updated.tags)
+    db.commit()
+    db.refresh(note)
+
+    return {
+        "id": note.id,
+        "title": note.title,
+        "content": note.content,
+        "tags": note.tags.split(",") if note.tags else []
+    }
+
+# delete note
 @app.delete("/notes/{note_id}")
-def delete_note(note_id: int):
-    if note_id not in notes:
+def delete_note(note_id: int, db: Session = Depends(get_db)):
+
+    note = db.query(Note).filter(Note.id == note_id).first()
+    if not note:
         raise HTTPException(status_code=404, detail="Note doesn't exist")
-    del notes[note_id]
+    
+    db.delete(note)
+    db.commit()
+
     return{"message":"Note Deleted"}
